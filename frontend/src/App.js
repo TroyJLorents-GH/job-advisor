@@ -15,9 +15,13 @@ import WorkIcon from '@mui/icons-material/Work';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import ReactMarkdown from 'react-markdown';
 
-const API_URL = 'http://localhost:5002';
+// Use Netlify function in production, localhost in development
+const API_URL = process.env.NODE_ENV === 'production'
+  ? '/.netlify/functions'
+  : 'http://localhost:5002';
 
 function App() {
+  const [conversationHistory, setConversationHistory] = useState([]);
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -66,7 +70,7 @@ Paste a job description to get started!`
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userMessage,
-          thread_id: threadId
+          conversationHistory: conversationHistory
         }),
       });
 
@@ -82,14 +86,14 @@ Paste a job description to get started!`
           role: 'assistant',
           content: data.response
         }]);
-        if (data.thread_id) {
-          setThreadId(data.thread_id);
+        if (data.conversationHistory) {
+          setConversationHistory(data.conversationHistory);
         }
       }
     } catch (error) {
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `**Connection Error:** Could not reach the backend. Make sure the server is running on port 5002.`
+        content: `**Connection Error:** Could not reach the backend.`
       }]);
     }
 
@@ -97,7 +101,7 @@ Paste a job description to get started!`
   };
 
   const handleReset = () => {
-    setThreadId(null);
+    setConversationHistory([]);
     setMessages([{
       role: 'assistant',
       content: `**Conversation Reset!**
