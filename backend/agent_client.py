@@ -1,100 +1,141 @@
-# agent_client.py - Azure OpenAI Client (API Key auth)
+# agent_client.py - Azure AI Foundry Agent Client
 import os
 import requests
+import time
 from dotenv import load_dotenv
+from azure.identity import InteractiveBrowserCredential
 
 load_dotenv()
 
+# Global token cache
+_cached_token = None
+_token_expiry = None
+
+def get_token(force_refresh=False):
+    global _cached_token, _token_expiry
+
+    # Check if token exists and is not expired (refresh 5 min before expiry)
+    if not force_refresh and _cached_token is not None and _token_expiry is not None:
+        if time.time() < _token_expiry - 300:  # 5 min buffer
+            print(f"Using cached token (expires in {int((_token_expiry - time.time()) / 60)} min)")
+            return _cached_token
+        else:
+            print("Token expired or expiring soon, refreshing...")
+
+    # Use your Entra ID tenant
+    tenant_id = "6da8a967-be75-4aa4-b913-1bc39a34b3be"
+    credential = InteractiveBrowserCredential(
+        tenant_id=tenant_id,
+        additionally_allowed_tenants=['*']
+    )
+
+    # Try Azure AI Services scope (the actual resource)
+    scope = "https://ai.azure.com/.default"
+    print(f"Requesting token with scope: {scope} for tenant: {tenant_id}")
+
+    token_response = credential.get_token(scope)
+    _cached_token = token_response.token
+    _token_expiry = token_response.expires_on
+    print(f"Token acquired successfully")
+    print(f"Token starts with: {_cached_token[:20]}...")
+    print(f"Token expires at: {time.ctime(_token_expiry)}")
+    return _cached_token
+
 class JobAdvisorAgent:
     def __init__(self):
-        # Azure OpenAI endpoint (not the agent endpoint)
-        self.endpoint = os.getenv("AZURE_ENDPOINT", "https://troy-mj186sow-swedencentral.services.ai.azure.com")
-        self.api_key = os.getenv("AZURE_API_KEY")
-        self.deployment = os.getenv("AZURE_DEPLOYMENT", "gpt-4o")
+        # Azure AI Foundry Agent endpoint
+        self.agent_endpoint = "https://troy-mj186sow-swedencentral.services.ai.azure.com/api/projects/troy-mj186sow-swedencentral_project/applications/ResumeAgent/protocols/openai/responses?api-version=2025-11-15-preview"
 
-        if not self.api_key:
-            raise ValueError("Missing AZURE_API_KEY in .env")
-
-        # Build the chat completions URL
-        self.chat_url = f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version=2024-10-21"
-
-        print(f"Connected to Azure OpenAI: {self.deployment}")
+        # Get token
+        self.token = get_token()
+        print(f"Connected to ResumeAgent")
 
         self.conversation_history = []
 
-        # System prompt for the Resume Advisor
-        self.system_prompt = """## Role
-You are my job application advisor. Your job is to quickly recommend which of my 4 resumes best matches a job posting and flag any patterns that suggest resume refinements.
-
-## My Resumes
-
-1. **DotNet_FS_Engineer** — Backend-heavy .NET focus: ASP.NET Core Web APIs, Entity Framework/Dapper, SQL Server optimization, C#, legacy .NET Framework migrations, API performance tuning, Azure DevOps CI/CD. React as supporting frontend skill.
-
-2. **FullStack_CloudArch** — Cloud architecture & DevOps focus: Multi-cloud (Azure/AWS/GCP), infrastructure design, CI/CD pipelines, system modernization, Docker, technical leadership. Full-stack with Python (FastAPI/Flask) + .NET + React.
-
-3. **Intel_Automation** — Intelligent automation & RPA focus: Power Automate, Power Apps, n8n, UiPath, Blue Prism, Azure Logic Apps, workflow orchestration, low-code + pro-code integration. Includes AI-enabled automation with Azure AI Foundry.
-
-4. **LLM_MLOPS_Engineer** — AI/ML systems focus: LLMs (GPT-4, Claude), RAG pipelines, vector databases, Azure AI Foundry, LangChain, agentic AI (ReAct pattern), multimodal processing (vision/OCR), prompt engineering, model deployment.
-
-## Workflow
-When I paste a job description:
-1. **Recommend** — Tell me which resume to use (just the name, no explanation needed unless it's a close call)
-2. **Match confidence** — High / Medium / Low
-3. **Gaps** (optional) — Only mention if a critical skill is missing that I might actually have
-
-## Decision Logic
-- Heavy .NET/C#/Entity Framework/SQL Server emphasis → **DotNet_FS_Engineer**
-- Cloud infrastructure/DevOps/architecture/multi-cloud → **FullStack_CloudArch**
-- RPA/Power Platform/workflow automation/low-code → **Intel_Automation**
-- LLMs/RAG/AI agents/ML pipelines/prompt engineering → **LLM_MLOPS_Engineer**
-- Generic "full stack" with no clear emphasis → Default to **FullStack_CloudArch** or **DotNet_FS_Engineer** based on tech stack mentioned
-
-## Response Format
-**Resume:** [name]
-**Confidence:** [High/Medium/Low]
-**Notes:** [only if needed]"""
-
     def chat(self, message: str, thread_id: str = None) -> tuple[str, str]:
         """
-        Send a message to the Resume Advisor.
+        Send a message to the ResumeAgent via OpenAI Responses protocol.
         """
         try:
-            # Add user message to history
-            self.conversation_history.append({"role": "user", "content": message})
+            # Refresh token if needed
+            self.token = get_token()
 
-            # Build messages with system prompt
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                *self.conversation_history
+            # Build the input messages
+            input_messages = self.conversation_history + [
+                {"role": "user", "content": message}
             ]
 
             payload = {
-                "messages": messages,
-                "max_tokens": 1000,
-                "temperature": 0.3
+                "input": input_messages
             }
 
             headers = {
                 "Content-Type": "application/json",
-                "api-key": self.api_key
+                "Authorization": f"Bearer {self.token}"
             }
 
+            print(f"\n{'='*50}")
+            print(f"Calling ResumeAgent...")
+            print(f"Endpoint: {self.agent_endpoint}")
+            print(f"Token (first 20 chars): {self.token[:20]}...")
+            print(f"Payload: {payload}")
+            print(f"{'='*50}\n")
+
             response = requests.post(
-                self.chat_url,
+                self.agent_endpoint,
                 json=payload,
-                headers=headers
+                headers=headers,
+                timeout=60
             )
 
             print(f"Response status: {response.status_code}")
+            print(f"Response headers: {dict(response.headers)}")
+
+            if response.status_code == 401:
+                # Token expired, force refresh
+                print("Token expired (401), forcing refresh...")
+                self.token = get_token(force_refresh=True)
+                headers["Authorization"] = f"Bearer {self.token}"
+                response = requests.post(
+                    self.agent_endpoint,
+                    json=payload,
+                    headers=headers,
+                    timeout=60
+                )
+                print(f"Retry response status: {response.status_code}")
 
             if response.status_code != 200:
                 print(f"Error: {response.status_code} - {response.text}")
-                raise Exception(f"API error: {response.status_code} - {response.text}")
+                raise Exception(f"Agent API error: {response.status_code} - {response.text}")
 
             data = response.json()
-            assistant_message = data["choices"][0]["message"]["content"]
+            print(f"Response received")
 
-            # Add to history
+            # Extract assistant response
+            assistant_message = ""
+
+            if "output_text" in data:
+                assistant_message = data["output_text"]
+            elif "output" in data:
+                for item in data["output"]:
+                    if item.get("type") == "message" and item.get("role") == "assistant":
+                        content = item.get("content", [])
+                        if isinstance(content, list):
+                            for c in content:
+                                if c.get("type") == "output_text":
+                                    assistant_message = c.get("text", "")
+                                    break
+                        else:
+                            assistant_message = str(content)
+                        break
+            elif "choices" in data:
+                assistant_message = data["choices"][0]["message"]["content"]
+
+            if not assistant_message:
+                assistant_message = str(data)
+
+            # Update conversation history
+            self.conversation_history.append({"role": "user", "content": message})
             self.conversation_history.append({"role": "assistant", "content": assistant_message})
 
             return assistant_message, thread_id
