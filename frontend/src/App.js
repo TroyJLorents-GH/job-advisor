@@ -45,6 +45,7 @@ Paste a job description to get started!`
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  // eslint-disable-next-line no-unused-vars
   const [threadId, setThreadId] = useState(null);
   const messagesEndRef = useRef(null);
 
