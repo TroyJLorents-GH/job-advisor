@@ -1,4 +1,4 @@
-// Netlify Function - Job Advisor Chat
+// Netlify Function - Job Advisor Chat using Azure AI Foundry Agent
 exports.handler = async (event) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
@@ -20,15 +20,16 @@ exports.handler = async (event) => {
     };
   }
 
-  const apiKey = process.env.AZURE_API_KEY;
-  const endpoint = process.env.AZURE_ENDPOINT || "https://troy-mj186sow-swedencentral.services.ai.azure.com";
-  const deployment = process.env.AZURE_DEPLOYMENT || "gpt-4o";
+  // Service Principal credentials
+  const clientId = process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.AZURE_CLIENT_SECRET;
+  const tenantId = process.env.AZURE_TENANT_ID;
 
-  if (!apiKey) {
+  if (!clientId || !clientSecret || !tenantId) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: "Azure API key not configured" }),
+      body: JSON.stringify({ error: "Azure credentials not configured" }),
     };
   }
 
@@ -43,106 +44,95 @@ exports.handler = async (event) => {
       };
     }
 
-    const SYSTEM_PROMPT = `## Role
-You are my job application advisor. Your job is to quickly recommend which of my 4 resumes best matches a job posting and flag any patterns that suggest resume refinements.
+    // Get Azure AD token using client credentials
+    const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+    const tokenBody = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      scope: "https://ai.azure.com/.default",
+      grant_type: "client_credentials",
+    });
 
-## My Resumes
+    const tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: tokenBody.toString(),
+    });
 
-1. **DotNet_FS_Engineer** — Backend-heavy .NET focus: ASP.NET Core Web APIs, Entity Framework/Dapper, SQL Server optimization, C#, legacy .NET Framework migrations, API performance tuning, Azure DevOps CI/CD. React as supporting frontend skill.
+    if (!tokenResponse.ok) {
+      const tokenError = await tokenResponse.text();
+      console.error("Token error:", tokenError);
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ error: "Failed to get Azure token" }),
+      };
+    }
 
-2. **FullStack_CloudArch** — Cloud architecture & DevOps focus: Multi-cloud (Azure/AWS/GCP), infrastructure design, CI/CD pipelines, system modernization, Docker, technical leadership. Full-stack with Python (FastAPI/Flask) + .NET + React.
+    const tokenData = await tokenResponse.json();
+    const accessToken = tokenData.access_token;
 
-3. **Intel_Automation** — Intelligent automation & RPA focus: Power Automate, Power Apps, n8n, UiPath, Blue Prism, Azure Logic Apps, workflow orchestration, low-code + pro-code integration. Includes AI-enabled automation with Azure AI Foundry.
-
-4. **LLM_MLOPS_Engineer** — AI/ML systems focus: LLMs (GPT-4, Claude), RAG pipelines, vector databases, Azure AI Foundry, LangChain, agentic AI (ReAct pattern), multimodal processing (vision/OCR), prompt engineering, model deployment.
-
-## Workflow
-When I paste a job description:
-1. **Recommend** — Tell me which resume to use (just the name, no explanation needed unless it's a close call)
-2. **Match confidence** — High / Medium / Low
-3. **Gaps** (optional) — Only mention if a critical skill is missing that I might actually have
-
-## Resume Edit Policy
-- Do NOT suggest edits for individual jobs
-- Only suggest edits after you notice a **pattern across 3+ jobs**
-- Track keywords/skills that keep appearing but aren't on the relevant resume
-- Goal: Optimize each resume as a strong default for its category
-
-## Pattern Tracking
-After every 3 job reviews, check:
-- Recurring skills I'm missing?
-- Keywords appearing frequently?
-- If pattern found → Suggest ONE resume update
-
-## Session Memory
-Keep a running mental tally of:
-- Jobs reviewed: [count]
-- Top recurring skills not on resumes: [list]
-- Pending recommendations: [any patterns approaching 3+ threshold]
-
-## Target Roles
-Software Engineer, .NET Engineer, Full Stack Engineer/Developer, Backend Engineer, Frontend Developer, Web App Developer, Cloud Architect, LLM/MLOps Engineer, Intelligent Automation, AI/Low-Code Automation
-
-## Decision Logic
-- Heavy .NET/C#/Entity Framework/SQL Server emphasis → **DotNet_FS_Engineer**
-- Cloud infrastructure/DevOps/architecture/multi-cloud → **FullStack_CloudArch**
-- RPA/Power Platform/workflow automation/low-code → **Intel_Automation**
-- LLMs/RAG/AI agents/ML pipelines/prompt engineering → **LLM_MLOPS_Engineer**
-- Generic "full stack" with no clear emphasis → Default to **FullStack_CloudArch** or **DotNet_FS_Engineer** based on tech stack mentioned
-
-## Response Format
-**Resume:** [name]
-**Confidence:** [High/Medium/Low]
-**Notes:** [only if needed]
-
-## Q&A
-When I ask about a job or my resume, be direct and to the point.
-- For resume changes, show the exact current text and your recommended replacement
-- Specify which resume the change applies to
-
-### Edit Format
-**Resume:** [which resume]
-**Current:** [exact current text]
-**Change to:** [replacement text]
-
-## Tone if you do rephrase anything
-- Do not use big articulate words that are rare to hear
-- Do not sound robotic
-- Respond as if you are me a software engineer that has 8+ years of experience and has good communication skills and does not talk extremely technical`;
-
-    const messages = [
-      { role: "system", content: SYSTEM_PROMPT },
+    // Build input messages for the agent
+    const inputMessages = [
       ...conversationHistory,
       { role: "user", content: message }
     ];
 
-    const chatUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=2024-10-21`;
+    // Call the ResumeAgent via OpenAI Responses protocol
+    const agentEndpoint = "https://troy-mj186sow-swedencentral.services.ai.azure.com/api/projects/troy-mj186sow-swedencentral_project/applications/ResumeAgent/protocols/openai/responses?api-version=2025-11-15-preview";
 
-    const response = await fetch(chatUrl, {
+    const response = await fetch(agentEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "api-key": apiKey,
+        "Authorization": `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
-        messages: messages,
-        max_tokens: 1000,
-        temperature: 0.3,
+        input: inputMessages,
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Azure API error:", response.status, errorText);
+      console.error("Agent API error:", response.status, errorText);
       return {
         statusCode: response.status,
         headers,
-        body: JSON.stringify({ error: "Failed to get response from Azure" }),
+        body: JSON.stringify({ error: "Failed to get response from Agent", detail: errorText }),
       };
     }
 
     const data = await response.json();
-    const assistantMessage = data.choices?.[0]?.message?.content || "";
+
+    // Extract assistant response
+    let assistantMessage = "";
+
+    if (data.output_text) {
+      assistantMessage = data.output_text;
+    } else if (data.output) {
+      for (const item of data.output) {
+        if (item.type === "message" && item.role === "assistant") {
+          const content = item.content;
+          if (Array.isArray(content)) {
+            for (const c of content) {
+              if (c.type === "output_text") {
+                assistantMessage = c.text || "";
+                break;
+              }
+            }
+          } else {
+            assistantMessage = String(content);
+          }
+          break;
+        }
+      }
+    } else if (data.choices) {
+      assistantMessage = data.choices[0]?.message?.content || "";
+    }
+
+    if (!assistantMessage) {
+      assistantMessage = JSON.stringify(data);
+    }
 
     return {
       statusCode: 200,
