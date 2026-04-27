@@ -6,6 +6,12 @@
 [functions]
   directory = "../netlify/functions"
 
+# Doc API proxy - must come before the generic /api/* redirect
+[[redirects]]
+  from = "/doc-api/*"
+  to = "/.netlify/functions/doc-api/:splat"
+  status = 200
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
